@@ -57,5 +57,5 @@ public async Task<IActionResult> UploadFile([FromForm] IFormFile file)
 Simply call
 
 ```csharp
-await Cache.DeleteFileAsync("folder/folder/file.extension", "containerName");
+await StorageService.DeleteFileAsync("folder/folder/file.extension", "containerName");
 ```
