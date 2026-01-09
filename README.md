@@ -1,4 +1,4 @@
-# Azure Storage Helpers
+# ASP.NET Core Azure Storage Helpers
 
 **Simplify Azure Storage Integration in Your .NET Core Project**
 
