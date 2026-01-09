@@ -1,17 +1,18 @@
 ﻿namespace AzureStorage
 {
-	using System.Collections.Generic;
-	using System.IO;
-	using System.Threading.Tasks;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System.Threading.Tasks;
 
-	public interface IStorageService
-	{
-		Task DeleteFileAsync(string cloudFilePath, string containerName);
+    public interface IStorageService
+    {
+        Task DeleteFileAsync(string cloudFilePath, string containerName, CancellationToken cancellationToken = default);
 
-		Task<BlobFile> GetInfoAsync(string cloudFilePath, string containerName);
+        Task<byte[]> DownloadStreamAsync(string cloudFilePath, string containerName, CancellationToken cancellationToken = default);
 
-		Task UploadStreamAsync(Stream stream, string cloudFilePath, string containerName);
+        Task<string> UploadStreamAsync(Stream stream, string cloudFilePath, string containerName, CancellationToken cancellationToken = default);
 
-		Task<List<BlobFile>> ListFilesAsync(string cloudDirectoryPath, string containerName, string delimiter = "/");
-	}
+        Task<List<BlobFile>> ListFilesAsync(string cloudDirectoryPath, string containerName, string delimiter = "/", CancellationToken cancellationToken = default);
+    }
 }

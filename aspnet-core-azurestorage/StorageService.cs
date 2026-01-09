@@ -1,228 +1,210 @@
-﻿namespace AzureStorage
+﻿namespace AzureStorage;
+
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+
+/// <summary>
+/// Service responsible for managing file operations in Azure Blob Storage, including upload, download, and deletion of files.
+/// </summary>
+/// <param name="blobServiceClient">Injected Azure BlobServiceClient for storage operations</param>
+public class StorageService(BlobServiceClient blobServiceClient) : IStorageService
 {
-	using Azure.Storage.Blobs;
-	using Azure.Storage.Blobs.Models;
-	using Microsoft.Extensions.Configuration;
-	using System;
-	using System.Collections.Generic;
-	using System.IO;
-	using System.Threading.Tasks;
+    /// <summary>
+    /// Blob service client for interacting with Azure Blob Storage.
+    /// </summary>
+    private readonly BlobServiceClient _blobServiceClient =
+        blobServiceClient ?? throw new ArgumentNullException(nameof(blobServiceClient));
 
-	/// <summary>
-	/// Storage service.
-	/// </summary>
-	public class StorageService : IStorageService
-	{
-		private readonly BlobServiceClient BlobServiceClient;
+    /// <summary>
+    /// Known mime types for uploaded blobs.
+    /// </summary>
+    private static readonly Dictionary<string, string> MimeTypes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            { ".png", "image/png" },
+            { ".mp4", "video/mp4" },
+            { ".txt", "text/plain" },
+            { ".mp3", "audio/mpeg" },
+            { ".jpg", "image/jpeg" },
+            { ".jpeg", "image/jpeg" },
+            { ".pdf", "application/pdf" }
+        };
 
-		public StorageService(IConfiguration configuration) => BlobServiceClient = new(configuration["StorageConnectionString"]);
+    /// <summary>
+    /// Downloads a file from blob storage.
+    /// </summary>
+    /// <param name="cloudFilePath">Blob storage path</param>
+    /// <param name="containerName">Container name</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    public async Task<byte[]> DownloadStreamAsync(string cloudFilePath, string containerName, CancellationToken cancellationToken = default)
+    {
+        // Get blob client.
+        BlobClient blobClient = GetBlobClient(containerName, cloudFilePath);
 
-		/// <summary>
-		/// Upload a file to blob storage.
-		/// </summary>
-		/// <param name="stream">File</param>
-		/// <param name="cloudFilePath">Blob storage path</param>
-		/// <param name="containerName">Container name</param>
-		public async Task UploadStreamAsync(Stream stream, string cloudFilePath, string containerName)
-		{
-			BlobContainerClient blobContainerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+        // Create memory stream.
+        await using MemoryStream stream = new();
 
-			await blobContainerClient.CreateIfNotExistsAsync();
+        // Download the blob to the stream.
+        await blobClient.DownloadToAsync(stream, cancellationToken);
 
-			BlobClient blobClient = blobContainerClient.GetBlobClient(cloudFilePath);
+        // Return the stream as byte array.
+        return stream.ToArray();
+    }
 
-			stream.Position = 0;
+    /// <summary>
+    /// Uploads a file to blob storage.
+    /// </summary>
+    /// <param name="stream">File</param>
+    /// <param name="cloudFilePath">Blob storage path</param>
+    /// <param name="containerName">Container name</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    public async Task<string> UploadStreamAsync(Stream stream, string cloudFilePath, string containerName, CancellationToken cancellationToken = default)
+    {
+        // Get container client.
+        BlobContainerClient container = await GetContainerAsync(containerName, cancellationToken);
 
-			await blobClient.UploadAsync(stream);
+        // Get blob client.
+        BlobClient blobClient = container.GetBlobClient(cloudFilePath);
 
-			await UpdateContentTypeAsync(cloudFilePath, containerName);
-		}
+        // Reset stream position.
+        if (stream.CanSeek)
+            stream.Position = 0;
 
-		/// <summary>
-		/// Get file info from path.
-		/// </summary>
-		/// <param name="cloudFilePath">Blob storage path</param>
-		/// <param name="containerName">Container name</param>
-		public async Task<BlobFile> GetInfoAsync(string cloudFilePath, string containerName)
-		{
-			BlobContainerClient blobContainerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+        // Upload the stream to the blob.
+        await blobClient.UploadAsync(stream, true, cancellationToken: cancellationToken);
 
-			await blobContainerClient.CreateIfNotExistsAsync();
+        // Update file mime type.
+        await UpdateContentTypeAsync(blobClient, cloudFilePath, cancellationToken);
 
-			try
-			{
-				BlobClient blobClient = blobContainerClient.GetBlobClient(cloudFilePath);
+        // Return the blob uri.
+        return blobClient.Uri.ToString();
+    }
 
-				var properties = await blobClient.GetPropertiesAsync();
+    /// <summary>
+    /// Deletes a file from blob storage.
+    /// </summary>
+    /// <param name="cloudFilePath">Blob storage path</param>
+    /// <param name="containerName">Container name</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    public async Task DeleteFileAsync(string cloudFilePath, string containerName, CancellationToken cancellationToken = default)
+    {
+        // Get blob client.
+        BlobClient blobClient = GetBlobClient(containerName, cloudFilePath);
 
-				return new BlobFile
-				{
-					Type = "blob",
-					Name = Path.GetFileName(blobClient.Name),
-					Length = properties.Value.ContentLength,
-					StorageUrl = $"{blobContainerClient.Uri}/{blobClient.Name}",
-					LastModified = properties.Value.LastModified.DateTime,
-				};
-			}
-			catch (Exception)
-			{
-				return null;
-			}
-		}
+        // Delete the blob if it exists.
+        await blobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+    }
 
-		/// <summary>
-		/// Delete a file from blob storage.
-		/// </summary>
-		/// <param name="cloudFilePath">Blob storage path</param>
-		/// <param name="containerName">Container name</param>
-		public async Task DeleteFileAsync(string cloudFilePath, string containerName)
-		{
-			BlobContainerClient blobContainerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+    /// <summary>
+    /// Lists files from selected cloud folder.
+    /// </summary>
+    /// <param name="cloudDirectoryPath"></param>
+    /// <param name="containerName">Container name</param>
+    /// <param name="delimiter">Delimeter</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    public async Task<List<BlobFile>> ListFilesAsync(string cloudDirectoryPath, string containerName, string delimiter = "/", CancellationToken cancellationToken = default)
+    {
+        // Get container client.
+        BlobContainerClient container = await GetContainerAsync(containerName, cancellationToken);
 
-			await blobContainerClient.CreateIfNotExistsAsync();
+        // Normalize directory path.
+        string prefix = NormalizeDirectoryPath(cloudDirectoryPath);
 
-			BlobClient blobClient = blobContainerClient.GetBlobClient(cloudFilePath);
+        // Prepare results list.
+        List<BlobFile> results = [];
 
-			await blobClient.DeleteIfExistsAsync();
-		}
+        // List blobs by hierarchy.
+        await foreach (var item in container.GetBlobsByHierarchyAsync(
+            prefix: prefix,
+            delimiter: delimiter,
+            traits: BlobTraits.None,
+            states: BlobStates.None,
+            cancellationToken: cancellationToken))
+        {
+            if (item.IsPrefix)
+            {
+                results.Add(new()
+                {
+                    Type = "directory",
+                    Name = new DirectoryInfo(item.Prefix).Name,
+                    StorageUrl = $"{container.Uri}/{item.Prefix}"
+                });
 
-		/// <summary>
-		/// List files from selected cloud folder.
-		/// </summary>
-		/// <param name="cloudDirectoryPath"></param>
-		/// <param name="containerName">Container name</param>
-		/// <param name="delimiter">Delimeter</param>
-		public async Task<List<BlobFile>> ListFilesAsync(string cloudDirectoryPath, string containerName, string delimiter = "/")
-		{
-			BlobContainerClient blobContainerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+                continue;
+            }
 
-			await blobContainerClient.CreateIfNotExistsAsync();
+            BlobItem? blob = item.Blob;
 
-			List<BlobFile> directoryFiles = new();
+            results.Add(new()
+            {
+                Type = "blob",
+                Name = Path.GetFileName(blob.Name),
+                Length = blob.Properties.ContentLength ?? 0,
+                LastModified = blob.Properties.LastModified?.DateTime,
+                StorageUrl = $"{container.Uri}/{blob.Name}"
+            });
+        }
 
-			cloudDirectoryPath = FixDirectoryName(cloudDirectoryPath);
+        return results;
+    }
 
-			string continuationToken = null;
+    /// <summary>
+    /// Gets blob client.
+    /// </summary>
+    /// <param name="containerName">Container name</param>
+    /// <param name="blobPath">Blob path</param>
+    private BlobClient GetBlobClient(string containerName, string blobPath) =>
+        _blobServiceClient.GetBlobContainerClient(containerName).GetBlobClient(blobPath);
 
-			BlobItem blob;
+    /// <summary>
+    /// Gets container client. Creates the container if it does not exist.
+    /// </summary>
+    /// <param name="containerName">Container name</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    private async Task<BlobContainerClient> GetContainerAsync(string containerName, CancellationToken cancellationToken)
+    {
+        BlobContainerClient? container = _blobServiceClient.GetBlobContainerClient(containerName);
 
-			try
-			{
-				do
-				{
-					foreach (Azure.Page<BlobHierarchyItem> blobPage in blobContainerClient.GetBlobsByHierarchy(prefix: cloudDirectoryPath, delimiter: delimiter).AsPages(continuationToken))
-					{
-						foreach (BlobHierarchyItem blobHierarchyItem in blobPage.Values)
-						{
-							if (blobHierarchyItem.IsPrefix)
-							{
-								string name = blobHierarchyItem.Prefix;
+        await container.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
-								directoryFiles.Add
-								(
-									new BlobFile
-									{
-										Type = "directory",
-										Name = new DirectoryInfo(name).Name,
-										StorageUrl = $"{blobContainerClient.Uri}/{name}",
-									}
-								);
-							}
-							else
-							{
-								blob = blobHierarchyItem.Blob;
+        return container;
+    }
 
-								directoryFiles.Add
-								(
-									new BlobFile
-									{
-										Type = "blob",
-										Name = Path.GetFileName(blob.Name),
-										Length = blob.Properties.ContentLength ?? 0,
-										StorageUrl = $"{blobContainerClient.Uri}/{blob.Name}",
-										LastModified = blob.Properties.LastModified?.DateTime,
-									}
-								);
-							}
-						}
+    /// <summary>
+    /// Fix directory name.
+    /// </summary>
+    /// <param name="path">Directory path</param>
+    private static string NormalizeDirectoryPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return string.Empty;
 
-						continuationToken = blobPage.ContinuationToken;
-					}
-				} while (continuationToken != "");
+        path = path.Replace("\\", "/");
 
-				return directoryFiles;
-			}
-			catch (Exception ex)
-			{
-				throw new Exception(ex.Message);
-			}
-		}
+        return path.EndsWith('/') ? path : path + "/";
+    }
 
-		/// <summary>
-		/// Fix directory name.
-		/// </summary>
-		/// <param name="path">Directory path</param>
-		private static string FixDirectoryName(string path)
-		{
-			if (!string.IsNullOrEmpty(path))
-			{
-				string lastChar = path.Substring(path.Length - 1, 1);
+    /// <summary>
+    /// Updates file mime type. Defaults to application/octet-stream if unknown.
+    /// </summary>
+    /// <param name="blobClient">Blob client</param>
+    /// <param name="blobPath">Blob path</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    private static async Task UpdateContentTypeAsync(BlobClient blobClient, string blobPath, CancellationToken cancellationToken)
+    {
+        // Get extension.
+        string? extension = Path.GetExtension(blobPath);
 
-				if (lastChar != "/")
-					return path + "/";
-				else
-					return path;
-			}
+        // If extension is unknown.
+        if (!MimeTypes.TryGetValue(extension, out var contentType))
+            contentType = "application/octet-stream";
 
-			return "/";
-		}
-
-		/// <summary>
-		/// Update file mime type.
-		/// </summary>
-		/// <param name="cloudFilePath">Blob path</param>
-		/// <param name="containerName">Container name</param>
-		private async Task UpdateContentTypeAsync(string cloudFilePath, string containerName)
-		{
-			bool setProperties = false;
-
-			string mimeType = "application/octet-stream";
-
-			if (
-				string.Equals(Path.GetExtension(cloudFilePath).ToLower(), ".jpg", StringComparison.OrdinalIgnoreCase)
-				||
-				string.Equals(Path.GetExtension(cloudFilePath).ToLower(), ".jpeg", StringComparison.OrdinalIgnoreCase)
-				)
-			{
-				setProperties = true;
-				mimeType = "image/jpeg";
-			}
-			else if (string.Equals(Path.GetExtension(cloudFilePath).ToLower(), ".mp4", StringComparison.OrdinalIgnoreCase))
-			{
-				setProperties = true;
-				mimeType = "video/mp4";
-			}
-			else if (string.Equals(Path.GetExtension(cloudFilePath).ToLower(), ".mp3", StringComparison.OrdinalIgnoreCase))
-			{
-				setProperties = true;
-				mimeType = "audio/mp3";
-			}
-
-			if (setProperties)
-			{
-				BlobContainerClient blobContainerClient = BlobServiceClient.GetBlobContainerClient(containerName);
-
-				await blobContainerClient.CreateIfNotExistsAsync();
-
-				BlobClient blobClient = blobContainerClient.GetBlobClient(cloudFilePath);
-
-				BlobHttpHeaders blobHttpHeader = new()
-				{
-					ContentType = mimeType
-				};
-
-				await blobClient.SetHttpHeadersAsync(blobHttpHeader);
-			}
-		}
-	}
+        // Update the blob's HTTP headers.
+        await blobClient.SetHttpHeadersAsync(
+            new BlobHttpHeaders { ContentType = contentType },
+            cancellationToken: cancellationToken);
+    }
 }
