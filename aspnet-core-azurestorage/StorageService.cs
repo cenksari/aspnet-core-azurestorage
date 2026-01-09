@@ -21,6 +21,16 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
         blobServiceClient ?? throw new ArgumentNullException(nameof(blobServiceClient));
 
     /// <summary>
+    /// Gets blob client.
+    /// </summary>
+    /// <param name="containerName">Container name</param>
+    /// <param name="cloudFilePath">Blob storage path</param>
+    private BlobClient GetBlobClient(
+        string containerName,
+        string cloudFilePath) =>
+        _blobServiceClient.GetBlobContainerClient(containerName).GetBlobClient(cloudFilePath);
+
+    /// <summary>
     /// Known mime types for uploaded blobs.
     /// </summary>
     private static readonly Dictionary<string, string> MimeTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -40,7 +50,10 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
     /// <param name="cloudFilePath">Blob storage path</param>
     /// <param name="containerName">Container name</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    public async Task<byte[]> DownloadStreamAsync(string cloudFilePath, string containerName, CancellationToken cancellationToken = default)
+    public async Task<byte[]> DownloadStreamAsync(
+        string cloudFilePath,
+        string containerName,
+        CancellationToken cancellationToken = default)
     {
         // Get blob client.
         BlobClient blobClient = GetBlobClient(containerName, cloudFilePath);
@@ -62,7 +75,11 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
     /// <param name="cloudFilePath">Blob storage path</param>
     /// <param name="containerName">Container name</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    public async Task<string> UploadStreamAsync(Stream stream, string cloudFilePath, string containerName, CancellationToken cancellationToken = default)
+    public async Task<string> UploadStreamAsync(
+        Stream stream,
+        string cloudFilePath,
+        string containerName,
+        CancellationToken cancellationToken = default)
     {
         // Get container client.
         BlobContainerClient container = await GetContainerAsync(containerName, cancellationToken);
@@ -75,7 +92,7 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
             stream.Position = 0;
 
         // Upload the stream to the blob.
-        await blobClient.UploadAsync(stream, true, cancellationToken: cancellationToken);
+        await blobClient.UploadAsync(stream, true, cancellationToken);
 
         // Update file mime type.
         await UpdateContentTypeAsync(blobClient, cloudFilePath, cancellationToken);
@@ -90,7 +107,10 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
     /// <param name="cloudFilePath">Blob storage path</param>
     /// <param name="containerName">Container name</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    public async Task DeleteFileAsync(string cloudFilePath, string containerName, CancellationToken cancellationToken = default)
+    public async Task DeleteFileAsync(
+        string cloudFilePath,
+        string containerName,
+        CancellationToken cancellationToken = default)
     {
         // Get blob client.
         BlobClient blobClient = GetBlobClient(containerName, cloudFilePath);
@@ -106,7 +126,11 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
     /// <param name="containerName">Container name</param>
     /// <param name="delimiter">Delimeter</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    public async Task<List<BlobFile>> ListFilesAsync(string cloudDirectoryPath, string containerName, string delimiter = "/", CancellationToken cancellationToken = default)
+    public async Task<List<BlobFile>> ListFilesAsync(
+        string cloudDirectoryPath,
+        string containerName,
+        string delimiter = "/",
+        CancellationToken cancellationToken = default)
     {
         // Get container client.
         BlobContainerClient container = await GetContainerAsync(containerName, cancellationToken);
@@ -153,19 +177,13 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
     }
 
     /// <summary>
-    /// Gets blob client.
-    /// </summary>
-    /// <param name="containerName">Container name</param>
-    /// <param name="blobPath">Blob path</param>
-    private BlobClient GetBlobClient(string containerName, string blobPath) =>
-        _blobServiceClient.GetBlobContainerClient(containerName).GetBlobClient(blobPath);
-
-    /// <summary>
     /// Gets container client. Creates the container if it does not exist.
     /// </summary>
     /// <param name="containerName">Container name</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    private async Task<BlobContainerClient> GetContainerAsync(string containerName, CancellationToken cancellationToken)
+    private async Task<BlobContainerClient> GetContainerAsync(
+        string containerName,
+        CancellationToken cancellationToken)
     {
         BlobContainerClient? container = _blobServiceClient.GetBlobContainerClient(containerName);
 
@@ -193,7 +211,10 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
     /// <param name="blobClient">Blob client</param>
     /// <param name="blobPath">Blob path</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    private static async Task UpdateContentTypeAsync(BlobClient blobClient, string blobPath, CancellationToken cancellationToken)
+    private static async Task UpdateContentTypeAsync(
+        BlobClient blobClient,
+        string blobPath,
+        CancellationToken cancellationToken)
     {
         // Get extension.
         string? extension = Path.GetExtension(blobPath);
@@ -202,9 +223,10 @@ public class StorageService(BlobServiceClient blobServiceClient) : IStorageServi
         if (!MimeTypes.TryGetValue(extension, out var contentType))
             contentType = "application/octet-stream";
 
+        // Create blob headers.
+        BlobHttpHeaders? blobHeaders = new() { ContentType = contentType };
+
         // Update the blob's HTTP headers.
-        await blobClient.SetHttpHeadersAsync(
-            new BlobHttpHeaders { ContentType = contentType },
-            cancellationToken: cancellationToken);
+        await blobClient.SetHttpHeadersAsync(blobHeaders, cancellationToken: cancellationToken);
     }
 }
